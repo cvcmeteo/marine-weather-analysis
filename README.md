@@ -1,112 +1,115 @@
-# Analisi Meteo Marina & Pianificazione Navigazione — Caprera / La Maddalena
+# Marine Weather Analysis & Navigation Planning — Caprera / La Maddalena
 
-Applicazione Python che, periodicamente:
+A Python application that periodically:
 
-1. Scarica l'ultima **carta sinottica di pressione al suolo** (immagine) dal
+1. Downloads the latest **surface-pressure synoptic chart** (image) from the
    [Met Office](https://weather.metoffice.gov.uk/maps-and-charts/surface-pressure).
-2. Recupera l'ultimo **bollettino Meteomar** direttamente dall'API di
-   [meteoam.it](https://www.meteoam.it/it/messaggio-meteomar) (testo integrale).
-3. Invia **immagine + testo** a un modello multimodale **Google Gemini**.
-4. Genera un report Markdown di analisi e pianificazione per la navigazione,
-   con le fonti allegate, e lo pubblica come pagina web navigabile.
+2. Fetches the latest **Meteomar bulletin** directly from the
+   [meteoam.it](https://www.meteoam.it/it/messaggio-meteomar) API (full text).
+3. Sends **image + text** to a multimodal **Google Gemini** model.
+4. Generates a Markdown analysis and navigation-planning report, with the sources
+   attached, and publishes it as a browsable web page.
 
-L'analisi è centrata sull'**Arcipelago di La Maddalena e Caprera** (zone Meteomar
-Mar di Sardegna, Mar di Corsica, Tirreno Settentrionale) ed è redatta con un
-registro tecnico e fattuale (niente enfasi; venti sempre in scala Beaufort + nodi).
+The analysis is focused on the **La Maddalena and Caprera archipelago** (Meteomar
+zones Mar di Sardegna, Mar di Corsica, Tirreno Settentrionale) and is written in a
+technical, factual register (no hype; wind always in Beaufort scale + knots).
 
-Il report segue una struttura rigorosa:
+> Note: the report content and the web UI are in Italian (the target audience);
+> the codebase, comments, and this manual are in English.
 
-- **1. Comparazione** — confronto tra situazione sinottica (isobare/gradiente
-  barico) e le sezioni *SITUAZIONE* e *PRESSIONE* del Meteomar.
-- **2. Il Dettaglio per la nostra area** — vento, stato del mare, cielo e
-  visibilità nelle prime 24 h per le aree di navigazione configurate.
-- **3. Proiezioni per il Weekend / Navigazione** — deduzioni pratiche (uso del
-  motore, ancoraggi notturni) dalle proiezioni a 12 h e successive.
-- **Fonti** — carta di pressione (immagine) e bollettino Meteomar integrale.
+The report follows a strict structure:
+
+- **1. Comparison** — synoptic situation (isobars/pressure gradient) vs. the
+  *SITUAZIONE* and *PRESSIONE* sections of the Meteomar bulletin.
+- **2. Detail for our area** — wind, sea state, sky and visibility over the first
+  24 h for the configured navigation areas.
+- **3. Weekend / navigation outlook** — practical deductions (engine use, night
+  anchorages) from the 12-hour-and-beyond projections.
+- **Sources** — pressure chart (image) and full Meteomar bulletin.
 
 ---
 
-## Esecuzione locale (Docker)
+## Local run (Docker)
 
-### Requisiti
-- [Docker](https://docs.docker.com/get-docker/) e Docker Compose
-- Una **chiave API Gemini** (gratuita da [Google AI Studio](https://aistudio.google.com/apikey))
+### Requirements
+- [Docker](https://docs.docker.com/get-docker/) and Docker Compose
+- A **Gemini API key** (free from [Google AI Studio](https://aistudio.google.com/apikey))
 
-### Configurazione
+### Configuration
 ```bash
 cp .env.example .env
-# poi apri .env e imposta GEMINI_API_KEY=...
+# then edit .env and set GEMINI_API_KEY=...
 ```
-Puoi personalizzare modello, aree di navigazione, intervallo, sorgenti dati e
-budget token (vedi commenti in `.env.example`).
+You can customize the model, navigation areas, interval, data sources and token
+budget (see the comments in `.env.example`).
 
-### Avvio
+### Start
 ```bash
 docker compose up -d --build
 ```
-Vengono avviati due container:
-- **`marine-weather`** — scheduler: esegue subito una prima analisi
-  (`RUN_ON_START=true`) e poi ripete ogni `RUN_INTERVAL_HOURS` (default 6).
-- **`web`** — server nginx che pubblica i report su **http://localhost:8080**.
+Two containers are started:
+- **`marine-weather`** — scheduler: runs an initial analysis immediately
+  (`RUN_ON_START=true`) and then repeats every `RUN_INTERVAL_HOURS` (default 6).
+- **`web`** — nginx server that publishes the reports at **http://localhost:8080**.
 
-### Comandi utili
+### Useful commands
 ```bash
-docker compose logs -f marine-weather   # log in tempo reale
-docker compose ps                        # stato dei container
-docker compose down                      # ferma tutto
-docker compose up -d --build             # ricostruisce dopo modifiche
+docker compose logs -f marine-weather   # live logs
+docker compose ps                        # container status
+docker compose down                      # stop everything
+docker compose up -d --build             # rebuild after code changes
 ```
 
-### Test manuale
+### Manual testing
 ```bash
-# Testa SOLO le fonti (nessuna chiave/chiamata LLM): salva output/_debug_chart.<ext>
+# Test ONLY the sources (no key / no LLM call): saves output/_debug_chart.<ext>
 docker compose run --rm marine-weather python main.py --check-sources
 
-# Esegue UN singolo ciclo completo (download → Gemini → Markdown) e termina.
+# Run ONE full cycle (download → Gemini → Markdown) and exit.
 docker compose run --rm --build marine-weather python main.py --once
 ```
 
-> Nota: `docker compose run` da solo riusa l'immagine in cache; aggiungi `--build`
-> dopo aver modificato il codice.
+> Note: `docker compose run` on its own reuses the cached image; add `--build`
+> after changing the code.
 
-Gli stessi comandi funzionano anche senza Docker
-(`pip install -r requirements.txt && playwright install chromium`, poi
+The same commands also work without Docker
+(`pip install -r requirements.txt && playwright install chromium`, then
 `python main.py --once`).
 
 ## Output
 
-I report vengono scritti in `./output`:
+Reports are written to `./output`:
 
-- `output/index.html` — pagina navigabile (elenco, visualizzazione, download).
-- `output/latest.md` — sempre l'ultimo report.
-- `output/analisi_meteo_<timestamp>.md` — storico datato di ogni emissione.
-- `output/chart_<timestamp>.gif` e `output/meteomar_<timestamp>.txt` — fonti allegate.
+- `output/index.html` — browsable page (list, view, download).
+- `output/latest.md` — always the most recent report.
+- `output/analisi_meteo_<timestamp>.md` — dated history of every emission.
+- `output/chart_<timestamp>.gif` and `output/meteomar_<timestamp>.txt` — attached sources.
 
-## Note e risoluzione problemi
+## Notes and troubleshooting
 
-- **Carta sinottica**: l'app cerca l'URL diretto dell'immagine nell'HTML del
-  Met Office (scartando social card/icone); se non lo trova, usa il **fallback
-  headless con Playwright/Chromium** (`USE_PLAYWRIGHT_FALLBACK=true`, default). In
-  ultima istanza puoi impostare `PRESSURE_CHART_IMAGE_URL`.
-- **Bollettino Meteomar**: recuperato dall'API CMS di meteoam.it (testo pulito);
-  in fallback viene tentato lo scraping HTML della pagina.
-- **Modello**: default `gemini-3.5-flash`. Modelli *thinking* contano i token di
-  ragionamento in `MAX_TOKENS`: se un report risulta troncato, alza `MAX_TOKENS`
-  o riduci `GEMINI_THINKING_BUDGET`. Il log segnala i troncamenti
+- **Synoptic chart**: the app looks for the direct image URL in the Met Office
+  HTML (skipping social cards/icons); if not found, it uses the **headless
+  Playwright/Chromium fallback** (`USE_PLAYWRIGHT_FALLBACK=true`, default). As a
+  last resort you can set `PRESSURE_CHART_IMAGE_URL`.
+- **Meteomar bulletin**: fetched from the meteoam.it CMS API (clean text); if that
+  fails, HTML scraping of the page is attempted as a fallback.
+- **Model**: default `gemini-3.5-flash`. *Thinking* models count reasoning tokens
+  against `MAX_TOKENS`: if a report comes out truncated, raise `MAX_TOKENS` or
+  lower `GEMINI_THINKING_BUDGET`. The logs flag truncations
   (`finish_reason=MAX_TOKENS`).
-- **Robustezza**: retry con backoff sulle chiamate di rete; le eccezioni sono
-  gestite e loggate senza interrompere lo scheduler.
-- **Fuso orario**: il container usa `Europe/Rome`; gli orari di emissione nel
-  report sono in UTC.
+- **Robustness**: network calls use retry with backoff; exceptions are handled and
+  logged without stopping the scheduler.
+- **Time zone**: the container uses `Europe/Rome`; the emission times in the report
+  are in UTC.
 
-## Struttura del progetto
+## Project structure
 
 ```
 .
-├── main.py                     # Fonti, chiamata LLM, prompt, report, indice HTML, scheduling
-├── requirements.txt            # Dipendenze Python
-├── Dockerfile                  # Immagine dell'ambiente
-├── docker-compose.yml          # Scheduler + web server nginx
-├── .env.example                # Modello di configurazione (copia in .env)
-└── output/                     # Report generati (index.html, .md, fonti)
+├── main.py                     # Sources, LLM call, prompt, report, HTML index, scheduling
+├── requirements.txt            # Python dependencies
+├── Dockerfile                  # Runtime image
+├── docker-compose.yml          # Scheduler + nginx web server
+├── .env.example                # Configuration template (copy to .env)
+└── output/                     # Generated reports (index.html, .md, sources)
 ```
