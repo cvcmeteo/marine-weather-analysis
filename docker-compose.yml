@@ -1,0 +1,33 @@
+services:
+  marine-weather:
+    build: .
+    image: marine-weather-analysis:latest
+    container_name: marine-weather
+    # Run as the host user (UID/GID 1000) so files written to the bind-mounted
+    # ./output directory are owned by the host user and writable. Overrides the
+    # image's default "pwuser" (UID 1001), which cannot write to a host-owned
+    # bind mount. Override via UID/GID env vars if your host user differs.
+    user: "${UID:-1000}:${GID:-1000}"
+    # Load secrets and configuration from the .env file (see .env.example).
+    env_file:
+      - .env
+    # Mount the host ./output folder so generated Markdown reports are
+    # accessible outside the container and survive restarts.
+    volumes:
+      - ./output:/app/output
+    # Keep the long-running scheduler alive across crashes and reboots.
+    restart: unless-stopped
+
+  # Static web server exposing the generated reports (index.html + Markdown
+  # files) at http://localhost:8080 so they can be viewed and downloaded.
+  web:
+    image: nginx:alpine
+    container_name: marine-weather-web
+    ports:
+      - "8080:80"
+    # Serve the same ./output folder the pipeline writes to (read-only).
+    volumes:
+      - ./output:/usr/share/nginx/html:ro
+    depends_on:
+      - marine-weather
+    restart: unless-stopped

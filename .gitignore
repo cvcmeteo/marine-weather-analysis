@@ -1,0 +1,22 @@
+# Secrets — NEVER commit real credentials
+.env
+.env.*
+!.env.example
+
+# Generated reports and source snapshots (produced at runtime)
+output/*
+!output/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Editor / tooling
+.claude/
+.idea/
+.vscode/
+*.swp
+.DS_Store
