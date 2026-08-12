@@ -15,6 +15,10 @@ services:
     # accessible outside the container and survive restarts.
     volumes:
       - ./output:/app/output
+      # nginx's JSON access log, read-only: the source for the /statistica page.
+      - ./logs:/app/logs:ro
+      # Optional GeoIP database (city.mmdb) for the country/city breakdown.
+      - ./geoip:/app/geoip:ro
     # Keep the long-running scheduler alive across crashes and reboots.
     restart: unless-stopped
 
@@ -25,9 +29,16 @@ services:
     container_name: marine-weather-web
     ports:
       - "8080:80"
-    # Serve the same ./output folder the pipeline writes to (read-only).
+    # Access-log timestamps must be UTC, like everything else in the reports.
+    environment:
+      - TZ=UTC
     volumes:
+      # Serve the same ./output folder the pipeline writes to (read-only).
       - ./output:/usr/share/nginx/html:ro
+      # Custom config: JSON access log + the /_e event beacon endpoint.
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      # Writable: stats.log is what the pipeline container reads back.
+      - ./logs:/var/log/nginx
     depends_on:
       - marine-weather
     restart: unless-stopped

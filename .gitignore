@@ -7,6 +7,10 @@
 output/*
 !output/.gitkeep
 
+# nginx access/error logs and the GeoIP database (both runtime data)
+logs/
+geoip/
+
 # Python
 __pycache__/
 *.py[cod]

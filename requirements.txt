@@ -3,3 +3,6 @@ beautifulsoup4==4.12.3
 schedule==1.2.2
 google-genai==1.9.0
 playwright==1.49.0
+# Reads the optional GeoIP .mmdb used by the /statistica page (MaxMind
+# GeoLite2-City or DB-IP City Lite); the app runs fine without the database.
+maxminddb==3.1.1

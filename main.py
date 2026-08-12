@@ -13,13 +13,19 @@ All comments are in English; the generated report is in Italian.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
+import re
 import sys
 import time
-from datetime import datetime, timezone
+from collections import Counter
+from datetime import datetime, timedelta, timezone
+# Aliased: write_index() already uses "html" as a local variable name.
+from html import escape as html_escape
 from pathlib import Path
 from typing import Optional
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import requests
 import schedule
@@ -39,7 +45,7 @@ from google.genai import errors as genai_errors
 # page change in a way worth telling apart in production: it is logged at
 # startup and shown in the header of index.html, so the running build can be
 # identified from the page alone.
-APP_VERSION = "0.1.1"
+APP_VERSION = "0.2.0"
 
 # Gemini API key is mandatory; the app refuses to start without it.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
@@ -116,6 +122,20 @@ USE_PLAYWRIGHT_FALLBACK = os.getenv(
 ).lower() in ("1", "true", "yes")
 # Max time (ms) to wait for the page to render in the headless browser.
 PLAYWRIGHT_TIMEOUT_MS = int(os.getenv("PLAYWRIGHT_TIMEOUT_MS", "45000"))
+
+# --- Visitor statistics (the unlisted /statistica page) ---------------------
+# Built by parsing the JSON access log nginx writes (see nginx/default.conf),
+# so there is no tracking script, no cookie and no third-party service.
+STATS_ENABLED = os.getenv("STATS_ENABLED", "true").lower() in ("1", "true", "yes")
+# Written by the web container, mounted read-only here.
+ACCESS_LOG_PATH = Path(os.getenv("ACCESS_LOG_PATH", "/app/logs/stats.log"))
+# Optional MaxMind/DB-IP .mmdb used to resolve city (and country, when
+# Cloudflare does not send its location headers). Absent = country only.
+GEOIP_DB_PATH = Path(os.getenv("GEOIP_DB_PATH", "/app/geoip/city.mmdb"))
+# Only requests newer than this take part in the aggregates.
+STATS_WINDOW_DAYS = int(os.getenv("STATS_WINDOW_DAYS", "90"))
+# How often the page is regenerated (it is much cheaper than a pipeline run).
+STATS_INTERVAL_MINUTES = int(os.getenv("STATS_INTERVAL_MINUTES", "30"))
 
 # Browser-like headers reduce the chance of being served a bot-block page.
 BROWSER_HEADERS = {
@@ -863,8 +883,8 @@ INDEX_TEMPLATE = """<!DOCTYPE html>
     <section class="utili">
       <h2>Link utili</h2>
       <ul>
-        <li><a href="https://www.sat24.com/it-it/country/it#lightning=on" target="_blank" rel="noopener">🛰 Satellite &amp; fulmini (Sat24)</a></li>
-        <li><a href="https://www.meteoam.it/it/meteomar" target="_blank" rel="noopener">📄 Bollettino Meteomar (Meteo AM)</a></li>
+        <li><a href="https://www.sat24.com/it-it/country/it#lightning=on" target="_blank" rel="noopener" data-track="Sat24">🛰 Satellite &amp; fulmini (Sat24)</a></li>
+        <li><a href="https://www.meteoam.it/it/meteomar" target="_blank" rel="noopener" data-track="Meteomar (Meteo AM)">📄 Bollettino Meteomar (Meteo AM)</a></li>
       </ul>
     </section>
   </aside>
@@ -889,6 +909,16 @@ INDEX_TEMPLATE = """<!DOCTYPE html>
     b.addEventListener('click', () => show(b.dataset.file)));
   const first = document.querySelector('button.view');   // auto-load newest report
   if (first) show(first.dataset.file);
+
+  // Clicks on outbound links open another site, so they never reach our access
+  // log: ping /_e instead, which nginx answers with 204 purely to record the
+  // URL. Report views need no beacon — fetching the .md is already a request.
+  // An <img> request (rather than fetch/sendBeacon) fires synchronously enough
+  // to survive the navigation and works with no CORS or method concerns.
+  document.querySelectorAll('a[data-track]').forEach(a =>
+    a.addEventListener('click', () => {
+      new Image().src = '/_e?ev=out&t=' + encodeURIComponent(a.dataset.track);
+    }));
 </script>
 </body>
 </html>
@@ -1013,6 +1043,518 @@ def write_index() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Visitor statistics (/statistica)
+# --------------------------------------------------------------------------- #
+
+# Requests whose User-Agent matches are crawlers, uptime probes and scripts.
+# They dominate the raw counts on a public host, so they are dropped before any
+# aggregation: what is left is a rough but honest picture of human traffic.
+_BOT_UA_RE = re.compile(
+    r"bot|crawl|spider|slurp|scrap|curl|wget|python-requests|go-http-client|"
+    r"okhttp|java/|libwww|headless|phantom|monitor|uptime|pingdom|preview|"
+    r"facebookexternalhit|whatsapp|telegrambot|feed|lighthouse|apache-httpclient",
+    re.IGNORECASE,
+)
+
+# Phones and tablets, for the device split. Deliberately crude: the UA string is
+# only ever used for these two buckets and for bot filtering.
+_MOBILE_UA_RE = re.compile(
+    r"android|iphone|ipad|ipod|mobile|windows phone|opera mini",
+    re.IGNORECASE,
+)
+
+# Report bodies are fetched by the page itself (marked.js) — one request per
+# report opened — while the sources are plain downloads.
+_REPORT_URI_RE = re.compile(r"/analisi_meteo_(\d{8}_\d{4}_UTC)\.md$")
+_CHART_URI_RE = re.compile(r"/chart_(\d{8}_\d{4}_UTC)\.\w+$")
+_BULLETIN_URI_RE = re.compile(r"/meteomar_(\d{8}_\d{4}_UTC)\.txt$")
+
+_ITALIAN_WEEKDAYS = ["Lunedì", "Martedì", "Mercoledì", "Giovedì",
+                     "Venerdì", "Sabato", "Domenica"]
+
+
+def _geoip_reader():
+    """Open the local GeoIP database, or return None if unavailable.
+
+    Both the MaxMind GeoLite2-City and the DB-IP City Lite files work: they
+    share the .mmdb format and the ``country``/``city`` record layout. The
+    lookup is optional — without it the page falls back to the country
+    Cloudflare reports and simply shows no cities.
+    """
+    if not GEOIP_DB_PATH.is_file():
+        return None
+    try:
+        import maxminddb  # lazy: the app must run without the package
+        return maxminddb.open_database(str(GEOIP_DB_PATH))
+    except Exception as exc:  # noqa: BLE001 - never break the page over geo
+        log.warning("GeoIP database %s could not be opened: %s", GEOIP_DB_PATH, exc)
+        return None
+
+
+def _geoip_lookup(reader, ip: str) -> tuple[str, str]:
+    """Return ``(country_code, city_name)`` for an IP; empty strings if unknown.
+
+    The country is kept as an ISO code so it can be merged with the code
+    Cloudflare sends, whatever the source of the lookup.
+    """
+    if reader is None or not ip:
+        return "", ""
+    try:
+        record = reader.get(ip) or {}
+    except Exception:  # noqa: BLE001 - malformed address, unmapped range, ...
+        return "", ""
+    country = record.get("country") or {}
+    city_names = (record.get("city") or {}).get("names", {})
+    return (country.get("iso_code") or "",
+            city_names.get("it") or city_names.get("en") or "")
+
+
+# Italian names for the countries this site realistically sees. Anything else
+# falls back to the bare ISO code, which is still readable next to the flag.
+_COUNTRY_NAMES_IT = {
+    "IT": "Italia", "FR": "Francia", "DE": "Germania", "GB": "Regno Unito",
+    "ES": "Spagna", "CH": "Svizzera", "AT": "Austria", "NL": "Paesi Bassi",
+    "BE": "Belgio", "US": "Stati Uniti", "SE": "Svezia", "NO": "Norvegia",
+    "DK": "Danimarca", "FI": "Finlandia", "PL": "Polonia", "PT": "Portogallo",
+    "IE": "Irlanda", "GR": "Grecia", "HR": "Croazia", "SI": "Slovenia",
+    "MT": "Malta", "MC": "Monaco", "CZ": "Cechia", "RO": "Romania",
+    "CA": "Canada", "AU": "Australia", "BR": "Brasile", "AR": "Argentina",
+}
+
+
+def _country_label(code: str) -> str:
+    """Render an ISO country code as "🇮🇹 Italia" (flag + name, or + code).
+
+    Regional-indicator letters sit at a fixed offset from A-Z, so the flag can
+    be derived from any well-formed code without a lookup table.
+    """
+    code = (code or "").upper()
+    if len(code) != 2 or not code.isalpha():
+        return code or "Sconosciuto"
+    flag = "".join(chr(0x1F1E6 + ord(letter) - ord("A")) for letter in code)
+    return f"{flag} {_COUNTRY_NAMES_IT.get(code, code)}"
+
+
+def _classify_uri(uri: str) -> tuple[str, str]:
+    """Map a request URI to an ``(event_kind, label)`` pair.
+
+    Everything that is not one of the tracked interactions (assets, favicons,
+    the statistics page itself) is returned as ``("other", "")`` and dropped by
+    the caller.
+    """
+    path = urlsplit(uri).path
+
+    if path in ("/", "/index.html"):
+        return "page", "Home"
+    if path.startswith("/statistica"):
+        return "other", ""          # never count the stats page in its own numbers
+
+    # Outbound-link beacon: the URL carries the event, nothing is served.
+    if path.startswith("/_e"):
+        params = parse_qs(urlsplit(uri).query)
+        target = (params.get("t") or [""])[0][:60]
+        kind = (params.get("ev") or [""])[0]
+        return ("outlink", unquote(target)) if kind == "out" else ("other", "")
+
+    if path.endswith("/latest.md"):
+        return "report", "latest"
+    match = _REPORT_URI_RE.search(path)
+    if match:
+        return "report", match.group(1)
+    match = _CHART_URI_RE.search(path)
+    if match:
+        return "chart", match.group(1)
+    match = _BULLETIN_URI_RE.search(path)
+    if match:
+        return "bulletin", match.group(1)
+    return "other", ""
+
+
+def _report_title(stamp: str) -> str:
+    """Human label for a report timestamp stamp (``YYYYMMDD_HHMM_UTC``).
+
+    Falls back to a formatted date when the report file is gone (or is the
+    rolling ``latest.md``, which has no stamp of its own).
+    """
+    if stamp == "latest":
+        return "latest.md (ultimo report)"
+    try:
+        dt = datetime.strptime(stamp, "%Y%m%d_%H%M_UTC")
+    except ValueError:
+        return stamp
+    label = dt.strftime("%d/%m/%Y %H:%M UTC")
+    path = OUTPUT_DIR / _report_subdir(dt) / f"analisi_meteo_{stamp}.md"
+    if path.is_file():
+        try:
+            first_line = path.read_text(encoding="utf-8").splitlines()[0]
+            title = first_line.lstrip("# ").strip()
+            if title:
+                return f"{label} — {title}"
+        except (OSError, IndexError):
+            pass
+    return label
+
+
+def collect_stats() -> Optional[dict]:
+    """Parse the nginx access log and return the aggregates for /statistica.
+
+    Returns None when the log is missing (the web container has not been
+    reconfigured yet) so the caller can skip the page instead of publishing an
+    empty one. Raw IPs are never kept: they are resolved to a country/city and
+    counted into a set of hashes for the unique-visitor figure, and the hashes
+    live only for the duration of this call.
+    """
+    if not ACCESS_LOG_PATH.is_file():
+        log.warning("Access log %s not found; skipping statistics.", ACCESS_LOG_PATH)
+        return None
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=STATS_WINDOW_DAYS)
+    reader = _geoip_reader()
+
+    countries, cities, hours, weekdays, days = (
+        Counter(), Counter(), Counter(), Counter(), Counter())
+    reports, charts, bulletins, outlinks, referrers = (
+        Counter(), Counter(), Counter(), Counter(), Counter())
+    devices = Counter()
+    visitors: set[str] = set()
+    page_views = 0
+    total = 0
+    first_seen: Optional[datetime] = None
+    last_seen: Optional[datetime] = None
+    malformed = 0
+
+    try:
+        lines = ACCESS_LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        log.warning("Could not read %s: %s", ACCESS_LOG_PATH, exc)
+        return None
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            malformed += 1
+            continue
+
+        # nginx writes $time_iso8601 (e.g. 2026-08-12T09:31:04+00:00); the web
+        # container runs with TZ=UTC so the offset is always zero, but parse it
+        # properly anyway in case that is ever changed.
+        try:
+            when = datetime.fromisoformat(entry.get("t", ""))
+        except ValueError:
+            malformed += 1
+            continue
+        when = when.astimezone(timezone.utc) if when.tzinfo else when.replace(
+            tzinfo=timezone.utc)
+        if when < cutoff:
+            continue
+
+        if entry.get("status") not in (200, 204, 206, 304):
+            continue
+        user_agent = entry.get("ua") or ""
+        if not user_agent or _BOT_UA_RE.search(user_agent):
+            continue
+
+        kind, label = _classify_uri(entry.get("uri") or "")
+        if kind == "other":
+            continue
+
+        total += 1
+        first_seen = when if first_seen is None or when < first_seen else first_seen
+        last_seen = when if last_seen is None or when > last_seen else last_seen
+
+        hours[when.hour] += 1
+        weekdays[when.weekday()] += 1
+        days[when.strftime("%Y-%m-%d")] += 1
+        devices["Mobile" if _MOBILE_UA_RE.search(user_agent) else "Desktop"] += 1
+
+        ip = entry.get("ip") or ""
+        if ip:
+            # Hashed with the UA so the raw address is never held beyond this
+            # loop; good enough to count returning visitors, useless as an
+            # identifier once the function returns.
+            visitors.add(str(hash((ip, user_agent))))
+
+        country, city = _geoip_lookup(reader, ip)
+        # "XX" is what Cloudflare sends when it cannot place the address.
+        country = country or (entry.get("cc") or "")
+        city = city or (entry.get("city") or "")
+        if country and country not in ("XX", "T1"):
+            countries[country] += 1
+        if city:
+            cities[f"{city} ({country})" if country else city] += 1
+
+        referer = entry.get("ref") or ""
+        if referer and referer != "-":
+            host = urlsplit(referer).netloc
+            if host and "cvcmeteo" not in host:
+                referrers[host] += 1
+
+        if kind == "page":
+            page_views += 1
+        elif kind == "report":
+            reports[label] += 1
+        elif kind == "chart":
+            charts[label] += 1
+        elif kind == "bulletin":
+            bulletins[label] += 1
+        elif kind == "outlink":
+            outlinks[label or "(sconosciuto)"] += 1
+
+    if reader is not None:
+        reader.close()
+    if malformed:
+        log.warning("Skipped %d malformed access-log line(s).", malformed)
+
+    return {
+        "generated": datetime.now(timezone.utc),
+        "first_seen": first_seen,
+        "last_seen": last_seen,
+        "requests": total,
+        "page_views": page_views,
+        "visitors": len(visitors),
+        "reports": reports,
+        "report_total": sum(reports.values()),
+        "downloads": sum(charts.values()) + sum(bulletins.values()),
+        "charts": charts,
+        "bulletins": bulletins,
+        "outlinks": outlinks,
+        "referrers": referrers,
+        "countries": countries,
+        "cities": cities,
+        "hours": hours,
+        "weekdays": weekdays,
+        "days": days,
+        "devices": devices,
+        "geoip": GEOIP_DB_PATH.is_file(),
+    }
+
+
+def _bar_rows(counter: Counter, limit: int = 12,
+              labeller=None, empty: str = "Nessun dato.") -> str:
+    """Render a Counter as a list of labelled proportional bars."""
+    items = counter.most_common(limit)
+    if not items:
+        return f'<p class="empty">{empty}</p>'
+    top = items[0][1] or 1
+    rows = []
+    for name, count in items:
+        text = labeller(name) if labeller else str(name)
+        width = max(1, round(count * 100 / top))
+        rows.append(
+            f'<div class="row"><span class="lbl" title="{html_escape(text, quote=True)}">'
+            f'{html_escape(text)}</span>'
+            f'<span class="bar"><i style="width:{width}%"></i></span>'
+            f'<span class="num">{count}</span></div>'
+        )
+    return "".join(rows)
+
+
+def _hour_columns(hours: Counter) -> str:
+    """Render the 24 UTC hour buckets as a column chart (always all 24)."""
+    top = max(hours.values(), default=0) or 1
+    cols = []
+    for hour in range(24):
+        count = hours.get(hour, 0)
+        height = round(count * 100 / top)
+        cols.append(
+            f'<div class="col" title="{hour:02d}:00–{hour:02d}:59 UTC — {count}">'
+            f'<i style="height:{height}%"></i><span>{hour:02d}</span></div>'
+        )
+    return "".join(cols)
+
+
+def _day_columns(days: Counter, limit: int = 30) -> str:
+    """Render the last ``limit`` calendar days as a column chart.
+
+    Days with no traffic are shown as gaps rather than omitted, so the shape of
+    the series is not distorted by quiet periods.
+    """
+    if not days:
+        return '<p class="empty">Nessun dato.</p>'
+    last = max(datetime.strptime(d, "%Y-%m-%d") for d in days)
+    span = [(last - timedelta(days=offset)).strftime("%Y-%m-%d")
+            for offset in range(limit - 1, -1, -1)]
+    top = max(days.values(), default=0) or 1
+    cols = []
+    for day in span:
+        count = days.get(day, 0)
+        height = round(count * 100 / top)
+        label = day[8:10] if day[8:10] in ("01", "05", "10", "15", "20", "25") else ""
+        cols.append(
+            f'<div class="col" title="{day} — {count}">'
+            f'<i style="height:{height}%"></i><span>{label}</span></div>'
+        )
+    return "".join(cols)
+
+
+STATS_TEMPLATE = """<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Statistiche — Analisi Meteo Marina</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:#0b1620; color:#e6eef5; line-height:1.5;
+         font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  header { padding:1.2rem 1.6rem; border-bottom:1px solid #1e3a5f; }
+  header h1 { margin:0; font-size:1.15rem; }
+  header p { margin:.35rem 0 0; color:#8aa0b5; font-size:.82rem; }
+  .wrap { padding:1.4rem 1.6rem 3rem; max-width:1100px; margin:0 auto; }
+  /* Headline figures: a responsive row of tiles that wraps on narrow screens. */
+  .tiles { display:grid; gap:.8rem; margin-bottom:1.6rem;
+           grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); }
+  .tile { background:#11202e; border:1px solid #1e3a5f; border-radius:8px;
+          padding:.85rem 1rem; }
+  .tile b { display:block; font-size:1.6rem; font-weight:600; color:#7fd4ff; }
+  .tile span { color:#8aa0b5; font-size:.78rem; }
+  .grid { display:grid; gap:1rem;
+          grid-template-columns:repeat(auto-fit,minmax(330px,1fr)); }
+  section { background:#11202e; border:1px solid #1e3a5f; border-radius:8px;
+            padding:.9rem 1.1rem 1.1rem; }
+  section h2 { margin:0 0 .8rem; font-size:.9rem; color:#c6d4e2;
+               font-weight:600; letter-spacing:.02em; }
+  section.wide { grid-column:1/-1; }
+  .empty { color:#6f8398; font-size:.85rem; margin:0; }
+  /* Horizontal bars: fixed label column, elastic bar, right-aligned count. */
+  .row { display:grid; grid-template-columns:minmax(0,9.5rem) 1fr 3rem;
+         align-items:center; gap:.6rem; margin:.3rem 0; font-size:.82rem; }
+  .lbl { overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+         color:#cfdcea; }
+  .bar { background:#0b1620; border-radius:3px; height:.62rem; overflow:hidden; }
+  .bar i { display:block; height:100%; background:#2d7fb8; }
+  .num { text-align:right; color:#8aa0b5; font-variant-numeric:tabular-nums; }
+  /* Column charts (hours of the day, last 30 days). */
+  .cols { display:flex; align-items:flex-end; gap:2px; height:130px;
+          padding-top:.4rem; }
+  .col { flex:1; display:flex; flex-direction:column; justify-content:flex-end;
+         align-items:center; height:100%; min-width:0; }
+  .col i { display:block; width:100%; background:#2d7fb8; border-radius:2px 2px 0 0;
+           min-height:1px; }
+  .col span { font-size:.6rem; color:#6f8398; margin-top:.25rem;
+              white-space:nowrap; }
+  footer { margin-top:1.6rem; color:#6f8398; font-size:.75rem; line-height:1.6; }
+  @media (max-width:640px) {
+    .wrap { padding:1.1rem 1rem 2.5rem; }
+    .row { grid-template-columns:minmax(0,7rem) 1fr 2.4rem; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>📊 Statistiche di utilizzo</h1>
+  <p>Analisi Meteo Marina — Caprera / La Maddalena · ver. {{VERSION}}<br>
+     Periodo: {{PERIOD}} · aggiornato il {{GENERATED}}</p>
+</header>
+<div class="wrap">
+  <div class="tiles">
+    <div class="tile"><b>{{VISITORS}}</b><span>visitatori distinti</span></div>
+    <div class="tile"><b>{{PAGE_VIEWS}}</b><span>aperture della home</span></div>
+    <div class="tile"><b>{{REPORT_VIEWS}}</b><span>report consultati</span></div>
+    <div class="tile"><b>{{DOWNLOADS}}</b><span>download di fonti</span></div>
+    <div class="tile"><b>{{REQUESTS}}</b><span>interazioni totali</span></div>
+  </div>
+  <div class="grid">
+    <section class="wide">
+      <h2>Fascia oraria (UTC)</h2>
+      <div class="cols">{{HOURS}}</div>
+    </section>
+    <section class="wide">
+      <h2>Ultimi 30 giorni</h2>
+      <div class="cols">{{DAYS}}</div>
+    </section>
+    <section><h2>Paesi</h2>{{COUNTRIES}}</section>
+    <section><h2>Città</h2>{{CITIES}}</section>
+    <section class="wide"><h2>Report più consultati</h2>{{REPORTS}}</section>
+    <section><h2>Carte scaricate</h2>{{CHARTS}}</section>
+    <section><h2>Bollettini scaricati</h2>{{BULLETINS}}</section>
+    <section><h2>Click sui link esterni</h2>{{OUTLINKS}}</section>
+    <section><h2>Provenienza del traffico</h2>{{REFERRERS}}</section>
+    <section><h2>Giorno della settimana</h2>{{WEEKDAYS}}</section>
+    <section><h2>Dispositivi</h2>{{DEVICES}}</section>
+  </div>
+  <footer>
+    Dati ricavati dai log del server web: nessun cookie, nessuno script di
+    tracciamento, nessun servizio di terze parti. Gli indirizzi IP sono usati
+    solo per ricavare paese e città e per contare i visitatori distinti, e non
+    vengono conservati in questa pagina. Il traffico riconosciuto come
+    automatico (crawler, sonde di monitoraggio) è escluso dai conteggi.
+    {{GEOIP_NOTE}}
+  </footer>
+</div>
+</body>
+</html>
+"""
+
+
+def write_stats() -> None:
+    """(Re)generate the unlisted /statistica page. Never raises."""
+    if not STATS_ENABLED:
+        return
+    try:
+        data = collect_stats()
+        if data is None:
+            return
+
+        if data["first_seen"] and data["last_seen"]:
+            period = (f'{data["first_seen"]:%d/%m/%Y} – {data["last_seen"]:%d/%m/%Y} '
+                      f'(finestra di {STATS_WINDOW_DAYS} giorni)')
+        else:
+            period = "nessuna visita registrata"
+
+        geoip_note = "" if data["geoip"] else (
+            "Database GeoIP non configurato: il dettaglio per città non è "
+            "disponibile e i paesi provengono dagli header di Cloudflare."
+        )
+
+        page = (
+            STATS_TEMPLATE
+            .replace("{{VERSION}}", APP_VERSION)
+            .replace("{{PERIOD}}", period)
+            .replace("{{GENERATED}}", f'{data["generated"]:%d/%m/%Y %H:%M UTC}')
+            .replace("{{VISITORS}}", str(data["visitors"]))
+            .replace("{{PAGE_VIEWS}}", str(data["page_views"]))
+            .replace("{{REPORT_VIEWS}}", str(data["report_total"]))
+            .replace("{{DOWNLOADS}}", str(data["downloads"]))
+            .replace("{{REQUESTS}}", str(data["requests"]))
+            .replace("{{HOURS}}", _hour_columns(data["hours"]))
+            .replace("{{DAYS}}", _day_columns(data["days"]))
+            .replace("{{COUNTRIES}}", _bar_rows(
+                data["countries"], labeller=_country_label))
+            .replace("{{CITIES}}", _bar_rows(
+                data["cities"], empty="Nessun dato (database GeoIP assente)."))
+            .replace("{{REPORTS}}", _bar_rows(
+                data["reports"], limit=15, labeller=_report_title))
+            .replace("{{CHARTS}}", _bar_rows(
+                data["charts"], limit=8, labeller=_report_title))
+            .replace("{{BULLETINS}}", _bar_rows(
+                data["bulletins"], limit=8, labeller=_report_title))
+            .replace("{{OUTLINKS}}", _bar_rows(data["outlinks"]))
+            .replace("{{REFERRERS}}", _bar_rows(
+                data["referrers"], empty="Solo accessi diretti."))
+            .replace("{{WEEKDAYS}}", _bar_rows(
+                data["weekdays"], limit=7,
+                labeller=lambda index: _ITALIAN_WEEKDAYS[int(index)]))
+            .replace("{{DEVICES}}", _bar_rows(data["devices"], limit=2))
+            .replace("{{GEOIP_NOTE}}", geoip_note)
+        )
+
+        stats_dir = OUTPUT_DIR / "statistica"
+        stats_dir.mkdir(parents=True, exist_ok=True)
+        (stats_dir / "index.html").write_text(page, encoding="utf-8")
+        log.info("Wrote statistics page (%d interactions, %d visitors).",
+                 data["requests"], data["visitors"])
+    except Exception:  # noqa: BLE001 - statistics must never stop the service
+        log.exception("Could not generate the statistics page.")
+
+
+# --------------------------------------------------------------------------- #
 # Pipeline orchestration
 # --------------------------------------------------------------------------- #
 
@@ -1045,6 +1587,7 @@ def run_pipeline() -> None:
             return
 
         write_report(report, emission_time, emission_dt, chart, meteomar_text)
+        write_stats()
         log.info("=== Pipeline run completed successfully ===")
     except Exception:  # noqa: BLE001 - keep the scheduler alive no matter what
         log.exception("Unexpected error during pipeline run.")
@@ -1097,6 +1640,7 @@ def run_service() -> None:
     # Ensure the browser page exists immediately (lists any existing reports),
     # even before the first pipeline run completes.
     write_index()
+    write_stats()
 
     if RUN_ON_START:
         run_pipeline()
@@ -1104,6 +1648,13 @@ def run_service() -> None:
     # Schedule recurring runs every N hours.
     schedule.every(RUN_INTERVAL_HOURS).hours.do(run_pipeline)
     log.info("Scheduler armed: next runs every %d hours.", RUN_INTERVAL_HOURS)
+
+    # Statistics are just a log re-read, so they refresh far more often than the
+    # pipeline: without this the page would only move every RUN_INTERVAL_HOURS.
+    if STATS_ENABLED:
+        schedule.every(STATS_INTERVAL_MINUTES).minutes.do(write_stats)
+        log.info("Statistics page refreshed every %d minutes.",
+                 STATS_INTERVAL_MINUTES)
 
     while True:
         schedule.run_pending()
@@ -1125,11 +1676,22 @@ def main() -> None:
         action="store_true",
         help="Test scraping/rendering only (no LLM call, no API key needed) and exit.",
     )
+    group.add_argument(
+        "--stats",
+        action="store_true",
+        help="Rebuild the /statistica page from the access log and exit "
+             "(no LLM call, no API key needed).",
+    )
     args = parser.parse_args()
 
     # Source self-test needs neither the API key nor the LLM.
     if args.check_sources:
         sys.exit(check_sources())
+
+    # Same for the statistics page: it only reads the web server's access log.
+    if args.stats:
+        write_stats()
+        sys.exit(0)
 
     # Both --once and the service mode need a valid API key.
     if not GEMINI_API_KEY:
