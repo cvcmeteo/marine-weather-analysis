@@ -772,6 +772,10 @@ INDEX_TEMPLATE = """<!DOCTYPE html>
   aside details.mo > summary { padding-left:1.6rem; color:#a9bccf; }
   aside details.wk > summary { padding-left:2.3rem; font-size:.8rem; color:#8aa0b5; }
   aside details.wk ul li { padding-left:1.6rem; }
+  /* External reference links, always visible at the bottom of the sidebar. */
+  aside .utili li { flex-direction:row; align-items:center; gap:.5rem; }
+  aside .utili a { color:#7fb4ff; text-decoration:none; font-size:.88rem; }
+  aside .utili a:hover { text-decoration:underline; }
   button.view { width:100%; text-align:left; background:none; border:none; color:#7fb4ff;
                 cursor:pointer; font-size:.9rem; padding:0; }
   button.view:hover { text-decoration:underline; }
@@ -802,6 +806,13 @@ INDEX_TEMPLATE = """<!DOCTYPE html>
     <section class="archive">
       <h2>Archivio</h2>
       {{ARCHIVE}}
+    </section>
+    <section class="utili">
+      <h2>Link utili</h2>
+      <ul>
+        <li><a href="https://www.sat24.com/it-it/country/it#lightning=on" target="_blank" rel="noopener">🛰 Satellite &amp; fulmini (Sat24)</a></li>
+        <li><a href="https://www.meteoam.it/it/meteomar" target="_blank" rel="noopener">📄 Bollettino Meteomar (Meteo AM)</a></li>
+      </ul>
     </section>
   </aside>
   <main><article id="content"><p class="placeholder">Seleziona un report dall'elenco.</p></article></main>
