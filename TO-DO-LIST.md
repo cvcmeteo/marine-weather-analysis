@@ -1,0 +1,2 @@
+- [ ] Add support for the English language.
+- [ ] Add the GitHub logo to the footer of the page, including a direct link to the project repository (https://github.com/cvcmeteo/marine-weather-analysis).
