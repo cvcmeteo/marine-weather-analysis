@@ -111,8 +111,10 @@ Reports are written to `./output`:
   page alone. Bump it by hand when the pipeline, the prompt or the page change.
 - **AI disclosure**: the page ends with a footer declaring that the reports are
   produced by a generative AI model, as required for AI-generated content; the
-  model name is injected from `GEMINI_MODEL`. The downloadable `.md` files do not
-  carry it.
+  model name is injected from `GEMINI_MODEL`. Every report `.md` closes with the
+  same notice (`AI_DISCLOSURE_MD`, appended after "Fonti"), so the disclosure
+  travels with the file when it is downloaded or forwarded — keep the two
+  wordings in sync.
 - **Small screens**: below 760 px the sidebar and the report stack vertically; the
   chart image and the bulletin block are constrained so the page never scrolls
   sideways.

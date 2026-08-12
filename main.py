@@ -39,7 +39,7 @@ from google.genai import errors as genai_errors
 # page change in a way worth telling apart in production: it is logged at
 # startup and shown in the header of index.html, so the running build can be
 # identified from the page alone.
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.1.1"
 
 # Gemini API key is mandatory; the app refuses to start without it.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
@@ -656,6 +656,23 @@ _IMAGE_EXT = {"image/png": "png", "image/jpeg": "jpg",
               "image/gif": "gif", "image/webp": "webp"}
 
 
+# AI-generated content disclosure appended to every report. The web page carries
+# the same notice, but the Markdown files are downloaded and forwarded on their
+# own, so the disclosure has to travel with them. Wording mirrors footer.ai in
+# INDEX_TEMPLATE; keep the two in sync.
+AI_DISCLOSURE_MD = """\
+\n\n---\n
+## Contenuto generato da intelligenza artificiale
+
+Questo report è prodotto automaticamente da un modello di IA generativa ({model})
+a partire dalla carta di pressione al suolo del Met Office e dal bollettino
+Meteomar del C.N.M.C.A. Il testo non è rivisto da un operatore umano prima della
+pubblicazione e può contenere errori o imprecisioni. Non sostituisce i bollettini
+meteorologici ufficiali: per la navigazione fare sempre riferimento alle fonti
+originali, riportate nella sezione "Fonti".
+"""
+
+
 def _report_subdir(dt: datetime) -> Path:
     """Return the year/month/week subdirectory (relative to OUTPUT_DIR) for a
     report emitted at ``dt``.
@@ -719,14 +736,17 @@ def write_report(
     The report and its sources are filed under a ``<year>/<month>/W<week>``
     subdirectory (derived from ``emission_dt``) to keep the output volume tidy.
     The pressure-chart image and the raw Meteomar bulletin are saved alongside
-    and appended to the report as a "Fonti" section.
+    and appended to the report as a "Fonti" section, followed by the AI
+    disclosure so it stays with the file when the Markdown is downloaded.
     """
     subdir = _report_subdir(emission_dt)
     (OUTPUT_DIR / subdir).mkdir(parents=True, exist_ok=True)
 
     stamp = emission_time.replace(":", "").replace("-", "").replace(" ", "_")
-    full_markdown = markdown + _build_sources_section(
-        stamp, subdir, chart, meteomar_text
+    full_markdown = (
+        markdown
+        + _build_sources_section(stamp, subdir, chart, meteomar_text)
+        + AI_DISCLOSURE_MD.format(model=GEMINI_MODEL)
     )
 
     dated_path = OUTPUT_DIR / subdir / f"analisi_meteo_{stamp}.md"
