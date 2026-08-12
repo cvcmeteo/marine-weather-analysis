@@ -1508,9 +1508,11 @@ def write_stats() -> None:
         else:
             period = "nessuna visita registrata"
 
-        geoip_note = "" if data["geoip"] else (
-            "Database GeoIP non configurato: il dettaglio per città non è "
-            "disponibile e i paesi provengono dagli header di Cloudflare."
+        # Cities can come from the local database or from Cloudflare's visitor
+        # location headers, so the note only applies when neither produced any.
+        geoip_note = "" if (data["geoip"] or data["cities"]) else (
+            "Dettaglio per città non disponibile: nessun database GeoIP "
+            "configurato e nessun header di posizione da Cloudflare."
         )
 
         page = (
@@ -1528,7 +1530,7 @@ def write_stats() -> None:
             .replace("{{COUNTRIES}}", _bar_rows(
                 data["countries"], labeller=_country_label))
             .replace("{{CITIES}}", _bar_rows(
-                data["cities"], empty="Nessun dato (database GeoIP assente)."))
+                data["cities"], empty="Nessun dato sulle città."))
             .replace("{{REPORTS}}", _bar_rows(
                 data["reports"], limit=15, labeller=_report_title))
             .replace("{{CHARTS}}", _bar_rows(
