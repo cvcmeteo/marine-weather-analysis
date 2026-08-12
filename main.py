@@ -45,7 +45,7 @@ from google.genai import errors as genai_errors
 # page change in a way worth telling apart in production: it is logged at
 # startup and shown in the header of index.html, so the running build can be
 # identified from the page alone.
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.2.1"
 
 # Gemini API key is mandatory; the app refuses to start without it.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
@@ -794,8 +794,11 @@ INDEX_TEMPLATE = """<!DOCTYPE html>
 <style>
   :root { color-scheme: light dark; }
   * { box-sizing: border-box; }
+  /* Column flexbox so the footer always sits below the content, whether the
+     layout is shorter or taller than the viewport. */
   body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-         background:#0b1622; color:#e6edf3; }
+         background:#0b1622; color:#e6edf3;
+         display:flex; flex-direction:column; min-height:100vh; }
   /* Right padding keeps the title clear of the absolutely positioned version
      badge, including when it wraps on narrow screens. */
   header { position:relative; padding:1.1rem 6rem 1.1rem 1.5rem; background:#0d2136;
@@ -805,7 +808,9 @@ INDEX_TEMPLATE = """<!DOCTYPE html>
   header .ver { position:absolute; top:1.1rem; right:1.5rem; color:#8aa0b5;
                 font-size:.75rem; border:1px solid #1e3a5f; border-radius:999px;
                 padding:.15rem .55rem; white-space:nowrap; }
-  .layout { display:flex; min-height: calc(100vh - 78px); }
+  /* min-height:0 lets the two panels scroll internally instead of stretching
+     the page to the height of the tallest one. */
+  .layout { display:flex; flex:1; min-height:0; }
   aside { width:340px; flex:0 0 340px; border-right:1px solid #1e3a5f; overflow-y:auto; }
   /* Sidebar list styles are scoped to <aside> so they never leak into the
      rendered report content in <article>. */
@@ -848,6 +853,14 @@ INDEX_TEMPLATE = """<!DOCTYPE html>
   article img { max-width:100%; height:auto; }
   article pre { overflow-x:auto; }
   .placeholder { color:#8aa0b5; text-align:center; margin-top:3rem; }
+  /* Site footer: the GitHub mark is an inline SVG so the page keeps working
+     with no icon font, no image request and no third-party asset. */
+  body > footer { display:flex; justify-content:center; padding:.75rem 1.5rem;
+                  background:#0d2136; border-top:1px solid #1e3a5f; font-size:.8rem; }
+  body > footer a { display:inline-flex; align-items:center; gap:.45rem;
+                    color:#8aa0b5; text-decoration:none; }
+  body > footer a:hover { color:#e6edf3; }
+  body > footer svg { width:17px; height:17px; fill:currentColor; }
   /* Phones: the 340px sidebar leaves no room for the report next to it, so
      stack the two. The list is capped and scrolls on its own, keeping the
      report reachable without paging through the whole archive. */
@@ -893,6 +906,12 @@ INDEX_TEMPLATE = """<!DOCTYPE html>
     <article id="content"><p class="placeholder">Seleziona un report dall'elenco.</p></article>
   </main>
 </div>
+<footer>
+  <a href="https://github.com/cvcmeteo/marine-weather-analysis" target="_blank" rel="noopener" data-track="GitHub">
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.13 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+    Codice sorgente su GitHub
+  </a>
+</footer>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script>
   const content = document.getElementById('content');

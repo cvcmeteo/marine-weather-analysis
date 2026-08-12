@@ -91,7 +91,8 @@ The same commands also work without Docker
 Reports are written to `./output`:
 
 - `output/index.html` — browsable page. The home page lists only the current
-  ISO week; older reports live in a collapsible year → month → week archive.
+  ISO week; older reports live in a collapsible year → month → week archive; the
+  footer links to the project repository on GitHub.
 - `output/latest.md` — always the most recent report.
 - `output/<year>/<month>/W<week>/analisi_meteo_<timestamp>.md` — dated history of
   every emission, filed by year, month and ISO week.
@@ -115,7 +116,8 @@ never written to the page. Traffic identified as automated (crawlers, uptime
 probes) is filtered out, and the statistics page is excluded from its own
 counts.
 
-Clicks on the "Link utili" entries open another site, so they never reach the
+Clicks on outbound links (the "Link utili" entries and the GitHub link in the
+footer) open another site, so they never reach the
 access log: the page pings `/_e?ev=out&t=<label>`, which nginx answers with 204
 purely so the click is recorded. Report views need no beacon — opening a report
 already fetches its `.md`.
