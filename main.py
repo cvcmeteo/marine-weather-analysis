@@ -45,7 +45,7 @@ from google.genai import errors as genai_errors
 # page change in a way worth telling apart in production: it is logged at
 # startup and shown in the header of index.html, so the running build can be
 # identified from the page alone.
-APP_VERSION = "0.2.1"
+APP_VERSION = "0.2.2"
 
 # Gemini API key is mandatory; the app refuses to start without it.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
@@ -887,7 +887,7 @@ INDEX_TEMPLATE = """<!DOCTYPE html>
 <div class="layout">
   <aside>
     <section class="current">
-      <h2>Settimana in corso</h2>
+      <h2>Settimana in corso (#{{WEEK}})</h2>
       <ul>{{CURRENT}}</ul>
     </section>
     <section class="archive">
@@ -1056,6 +1056,8 @@ def write_index() -> None:
         INDEX_TEMPLATE
         .replace("{{CURRENT}}", "\n".join(current_items))
         .replace("{{ARCHIVE}}", archive_html)
+        # Zero-padded like the archive's "Settimana NN" summaries.
+        .replace("{{WEEK}}", f"{current_key[1]:02d}")
         .replace("{{VERSION}}", APP_VERSION)
     )
     (OUTPUT_DIR / "index.html").write_text(html, encoding="utf-8")
