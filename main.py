@@ -468,7 +468,34 @@ def scrape_meteomar(session: requests.Session) -> Optional[str]:
 # LLM analysis (Google Gemini, multimodal)
 # --------------------------------------------------------------------------- #
 
-SYSTEM_PROMPT = f"""Sei un meteorologo marino esperto e un istruttore di vela d'altura.
+def build_system_prompt(now: datetime) -> str:
+    """Return the Gemini system prompt for a run emitted at ``now``.
+
+    Section 3 adapts to the day of week: the "weekend" framing is only used from
+    Thursday onward (``weekday() >= 3``). Earlier in the week we ask for generic
+    forward projections instead, so the report never talks about "il weekend"
+    when the weekend is still several days away.
+    """
+    weekend_focus = now.weekday() >= 3  # Mon=0 ... Thu=3 ... Sun=6
+
+    if weekend_focus:
+        section3_title = "## 3. Proiezioni per il Weekend / Navigazione"
+        section3_intro = (
+            "Usa la sezione delle proiezioni a 12 ore e intervalli successivi del "
+            "Meteomar per generare deduzioni pratiche per la navigazione nel "
+            "weekend e la vita in barca. Includi almeno:"
+        )
+    else:
+        section3_title = "## 3. Proiezioni / Navigazione"
+        section3_intro = (
+            "Usa la sezione delle proiezioni a 12 ore e intervalli successivi del "
+            "Meteomar per generare deduzioni pratiche per la navigazione nei "
+            "prossimi giorni e la vita in barca. NON fare riferimento al "
+            '"weekend": limitati all\'orizzonte temporale effettivamente coperto '
+            "dal bollettino. Includi almeno:"
+        )
+
+    return f"""Sei un meteorologo marino esperto e un istruttore di vela d'altura.
 Ricevi due fonti dati:
 1. Un'immagine: la carta sinottica di pressione al suolo (isobare, minimi, massimi, fronti).
 2. Un testo grezzo: l'ultimo bollettino Meteomar (sezioni SITUAZIONE, PRESSIONE,
@@ -490,9 +517,8 @@ Analisi mirata sui mari che lambiscono le seguenti aree di navigazione: {NAV_ARE
 Sintetizza per le prime 24 ore: vento (direzione e forza in scala Beaufort),
 stato del mare, cielo e visibilità, estrapolando i dati dal bollettino.
 
-## 3. Proiezioni per il Weekend / Navigazione
-Usa la sezione delle proiezioni a 12 ore e intervalli successivi del Meteomar per
-generare deduzioni pratiche per la vita in barca. Includi almeno:
+{section3_title}
+{section3_intro}
 - **Uso del motore**: necessità di usare il motore in base all'intensità del vento
   previsto (es. venti di Forza 2) e indicazioni sulle brezze.
 - **Ancoraggi notturni**: implicazioni per gli ancoraggi in rada dedotte dallo
@@ -533,6 +559,7 @@ def build_analysis(
     chart: Optional[tuple[bytes, str]],
     meteomar_text: Optional[str],
     emission_time: str,
+    system_prompt: str,
 ) -> Optional[str]:
     """Call the multimodal Gemini model and return the Markdown report text."""
     # Assemble the request parts: image (if any) + textual context.
@@ -566,7 +593,7 @@ def build_analysis(
     )
 
     config_kwargs = dict(
-        system_instruction=SYSTEM_PROMPT,
+        system_instruction=system_prompt,
         max_output_tokens=MAX_TOKENS,
         temperature=0.4,
     )
@@ -623,33 +650,50 @@ _IMAGE_EXT = {"image/png": "png", "image/jpeg": "jpg",
               "image/gif": "gif", "image/webp": "webp"}
 
 
+def _report_subdir(dt: datetime) -> Path:
+    """Return the year/month/week subdirectory (relative to OUTPUT_DIR) for a
+    report emitted at ``dt``.
+
+    Reports are filed under ``<year>/<month>/W<isoweek>`` so the output volume
+    stays tidy as bulletins accumulate. The ISO week number is used so a "week"
+    folder maps to the same Mon-Sun span the home page treats as current.
+    """
+    iso_week = dt.isocalendar()[1]
+    return Path(str(dt.year)) / f"{dt.month:02d}" / f"W{iso_week:02d}"
+
+
 def _build_sources_section(
     stamp: str,
+    subdir: Path,
     chart: Optional[tuple[bytes, str]],
     meteomar_text: Optional[str],
 ) -> str:
     """Save the source chart/bulletin next to the report and return a Markdown
     "Fonti" section that embeds the chart image and the full Meteomar text.
 
-    The saved filenames are timestamped so each report keeps its own sources;
-    they are served (and thus viewable/downloadable) by the web container.
+    The sources are saved inside ``OUTPUT_DIR/subdir`` (same folder as the
+    report) and the links are made relative to the output root, because the
+    Markdown is rendered client-side against the root index.html. The saved
+    filenames are timestamped so each report keeps its own sources; they are
+    served (and thus viewable/downloadable) by the web container.
     """
+    href_prefix = subdir.as_posix()
     parts = ["\n\n---\n\n## Fonti\n"]
 
     parts.append("### Carta di pressione al suolo (Met Office)\n")
     if chart is not None:
         image_bytes, media_type = chart
         chart_name = f"chart_{stamp}.{_IMAGE_EXT.get(media_type, 'png')}"
-        (OUTPUT_DIR / chart_name).write_bytes(image_bytes)
-        parts.append(f"![Carta di pressione al suolo]({chart_name})\n")
+        (OUTPUT_DIR / subdir / chart_name).write_bytes(image_bytes)
+        parts.append(f"![Carta di pressione al suolo]({href_prefix}/{chart_name})\n")
     else:
         parts.append("_Non disponibile per questa emissione._\n")
 
     parts.append("### Bollettino Meteomar (testo integrale)\n")
     if meteomar_text:
         mm_name = f"meteomar_{stamp}.txt"
-        (OUTPUT_DIR / mm_name).write_text(meteomar_text, encoding="utf-8")
-        parts.append(f"[⬇ Scarica il bollettino]({mm_name})\n")
+        (OUTPUT_DIR / subdir / mm_name).write_text(meteomar_text, encoding="utf-8")
+        parts.append(f"[⬇ Scarica il bollettino]({href_prefix}/{mm_name})\n")
         parts.append(f"```text\n{meteomar_text}\n```\n")
     else:
         parts.append("_Non disponibile per questa emissione._\n")
@@ -660,20 +704,26 @@ def _build_sources_section(
 def write_report(
     markdown: str,
     emission_time: str,
+    emission_dt: datetime,
     chart: Optional[tuple[bytes, str]] = None,
     meteomar_text: Optional[str] = None,
 ) -> Path:
     """Write the report to the output volume and update 'latest.md'.
 
+    The report and its sources are filed under a ``<year>/<month>/W<week>``
+    subdirectory (derived from ``emission_dt``) to keep the output volume tidy.
     The pressure-chart image and the raw Meteomar bulletin are saved alongside
     and appended to the report as a "Fonti" section.
     """
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    subdir = _report_subdir(emission_dt)
+    (OUTPUT_DIR / subdir).mkdir(parents=True, exist_ok=True)
 
     stamp = emission_time.replace(":", "").replace("-", "").replace(" ", "_")
-    full_markdown = markdown + _build_sources_section(stamp, chart, meteomar_text)
+    full_markdown = markdown + _build_sources_section(
+        stamp, subdir, chart, meteomar_text
+    )
 
-    dated_path = OUTPUT_DIR / f"analisi_meteo_{stamp}.md"
+    dated_path = OUTPUT_DIR / subdir / f"analisi_meteo_{stamp}.md"
     latest_path = OUTPUT_DIR / "latest.md"
 
     dated_path.write_text(full_markdown, encoding="utf-8")
@@ -710,6 +760,18 @@ INDEX_TEMPLATE = """<!DOCTYPE html>
   aside li { display:flex; flex-direction:column; align-items:flex-start; gap:.4rem;
        padding:.7rem .9rem; border-bottom:1px solid #14263c; }
   aside li.empty { color:#8aa0b5; }
+  aside section { border-bottom:1px solid #1e3a5f; }
+  aside h2 { margin:0; padding:.7rem .9rem; font-size:.78rem; text-transform:uppercase;
+       letter-spacing:.06em; color:#8aa0b5; background:#0d2136; }
+  /* Archive drill-down: year > month > week, each a collapsible <details>. */
+  aside details { border-top:1px solid #14263c; }
+  aside details > summary { cursor:pointer; padding:.55rem .9rem; color:#c6d4e2;
+       font-size:.85rem; user-select:none; }
+  aside details > summary:hover { color:#e6edf3; }
+  aside details.yr > summary { font-weight:600; }
+  aside details.mo > summary { padding-left:1.6rem; color:#a9bccf; }
+  aside details.wk > summary { padding-left:2.3rem; font-size:.8rem; color:#8aa0b5; }
+  aside details.wk ul li { padding-left:1.6rem; }
   button.view { width:100%; text-align:left; background:none; border:none; color:#7fb4ff;
                 cursor:pointer; font-size:.9rem; padding:0; }
   button.view:hover { text-decoration:underline; }
@@ -732,7 +794,16 @@ INDEX_TEMPLATE = """<!DOCTYPE html>
   <p>Report generati automaticamente. Seleziona un report per visualizzarlo o scaricarlo.</p>
 </header>
 <div class="layout">
-  <aside><ul>{{ITEMS}}</ul></aside>
+  <aside>
+    <section class="current">
+      <h2>Settimana in corso</h2>
+      <ul>{{CURRENT}}</ul>
+    </section>
+    <section class="archive">
+      <h2>Archivio</h2>
+      {{ARCHIVE}}
+    </section>
+  </aside>
   <main><article id="content"><p class="placeholder">Seleziona un report dall'elenco.</p></article></main>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
@@ -758,45 +829,118 @@ INDEX_TEMPLATE = """<!DOCTYPE html>
 """
 
 
+# Italian month names, indexed 1-12 (index 0 unused), for archive labels.
+_MONTHS_IT = [
+    "", "Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno",
+    "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre",
+]
+
+
+def _report_dt(path: Path) -> Optional[datetime]:
+    """Parse the emission datetime encoded in a report filename, or None."""
+    stamp = path.stem.replace("analisi_meteo_", "", 1)
+    try:
+        return datetime.strptime(stamp, "%Y%m%d_%H%M_UTC").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError:
+        return None
+
+
+def _report_li(path: Path) -> str:
+    """Render a single report as an <li> with a view button and source links.
+
+    All hrefs are made relative to OUTPUT_DIR (the site root) so they resolve
+    correctly regardless of which year/month/week folder the report lives in.
+    """
+    try:
+        first_line = path.read_text(encoding="utf-8").splitlines()[0]
+    except (OSError, IndexError):
+        first_line = ""
+    title = first_line.lstrip("# ").strip() or path.stem
+
+    # Locate the source files saved next to this report (same timestamp stamp).
+    stamp = path.stem.replace("analisi_meteo_", "", 1)
+    chart_file = next(iter(path.parent.glob(f"chart_{stamp}.*")), None)
+    meteomar_file = path.parent / f"meteomar_{stamp}.txt"
+
+    file_href = path.relative_to(OUTPUT_DIR).as_posix()
+    links = [f'<a class="dl" href="{file_href}" download>⬇ Report</a>']
+    if chart_file is not None:
+        chart_href = chart_file.relative_to(OUTPUT_DIR).as_posix()
+        links.append(f'<a class="dl" href="{chart_href}" target="_blank">🗺 Carta</a>')
+    if meteomar_file.exists():
+        mm_href = meteomar_file.relative_to(OUTPUT_DIR).as_posix()
+        links.append(f'<a class="dl" href="{mm_href}" target="_blank">📄 Bollettino</a>')
+
+    return (
+        f'<li><button class="view" data-file="{file_href}">{title}</button>'
+        f'<span class="links">{"".join(links)}</span></li>'
+    )
+
+
 def write_index() -> None:
     """(Re)generate index.html in the output dir: a browsable list of reports.
 
-    Served by the companion nginx container. Each entry links to the Markdown
+    Served by the companion nginx container. The home page shows only the
+    reports of the current ISO week; everything older is tucked into a
+    collapsible year > month > week archive. Each entry links to the Markdown
     file (downloadable) and can be rendered in-page. Safe to call any time.
     """
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Filenames are timestamped, so reverse-sorting puts the newest first.
-    reports = sorted(OUTPUT_DIR.glob("analisi_meteo_*.md"), reverse=True)
+    # Scan recursively (reports now live in year/month/week folders). Filenames
+    # are timestamped, so reverse-sorting puts the newest first.
+    reports = sorted(OUTPUT_DIR.glob("**/analisi_meteo_*.md"), reverse=True)
 
-    items = []
+    now = datetime.now(timezone.utc)
+    current_key = now.isocalendar()[:2]  # (iso_year, iso_week)
+
+    current_items: list[str] = []
+    # archive: {year: {month: {iso_week: [paths]}}}, all keys sorted later.
+    archive: dict[int, dict[int, dict[int, list[Path]]]] = {}
+
     for path in reports:
-        try:
-            first_line = path.read_text(encoding="utf-8").splitlines()[0]
-        except (OSError, IndexError):
-            first_line = ""
-        title = first_line.lstrip("# ").strip() or path.stem
+        dt = _report_dt(path)
+        if dt is not None and dt.isocalendar()[:2] == current_key:
+            current_items.append(_report_li(path))
+        elif dt is not None:
+            iso_week = dt.isocalendar()[1]
+            (archive.setdefault(dt.year, {})
+                    .setdefault(dt.month, {})
+                    .setdefault(iso_week, [])).append(path)
 
-        # Locate the source files saved for this report (same timestamp stamp).
-        stamp = path.stem.replace("analisi_meteo_", "", 1)
-        chart_file = next(iter(OUTPUT_DIR.glob(f"chart_{stamp}.*")), None)
-        meteomar_file = OUTPUT_DIR / f"meteomar_{stamp}.txt"
+    if not current_items:
+        current_items.append('<li class="empty">Nessun report per la settimana in corso.</li>')
 
-        links = [f'<a class="dl" href="{path.name}" download>⬇ Report</a>']
-        if chart_file is not None:
-            links.append(f'<a class="dl" href="{chart_file.name}" target="_blank">🗺 Carta</a>')
-        if meteomar_file.exists():
-            links.append(f'<a class="dl" href="{meteomar_file.name}" target="_blank">📄 Bollettino</a>')
-
-        items.append(
-            f'<li><button class="view" data-file="{path.name}">{title}</button>'
-            f'<span class="links">{"".join(links)}</span></li>'
+    # Build the nested year > month > week archive (newest first at every level).
+    archive_parts: list[str] = []
+    for year in sorted(archive, reverse=True):
+        month_parts: list[str] = []
+        for month in sorted(archive[year], reverse=True):
+            week_parts: list[str] = []
+            for iso_week in sorted(archive[year][month], reverse=True):
+                lis = "\n".join(_report_li(p) for p in archive[year][month][iso_week])
+                week_parts.append(
+                    f'<details class="wk"><summary>Settimana {iso_week:02d}</summary>'
+                    f'<ul>{lis}</ul></details>'
+                )
+            month_parts.append(
+                f'<details class="mo"><summary>{_MONTHS_IT[month]}</summary>'
+                f'{"".join(week_parts)}</details>'
+            )
+        archive_parts.append(
+            f'<details class="yr"><summary>{year}</summary>'
+            f'{"".join(month_parts)}</details>'
         )
 
-    if not items:
-        items.append('<li class="empty">Nessun report ancora disponibile.</li>')
+    archive_html = "".join(archive_parts) or '<p class="empty" style="padding:.7rem .9rem">Nessun report archiviato.</p>'
 
-    html = INDEX_TEMPLATE.replace("{{ITEMS}}", "\n".join(items))
+    html = (
+        INDEX_TEMPLATE
+        .replace("{{CURRENT}}", "\n".join(current_items))
+        .replace("{{ARCHIVE}}", archive_html)
+    )
     (OUTPUT_DIR / "index.html").write_text(html, encoding="utf-8")
     log.info("Wrote index.html (%d report(s)).", len(reports))
 
@@ -807,7 +951,8 @@ def write_index() -> None:
 
 def run_pipeline() -> None:
     """Run one full download → analyze → write cycle. Never raises."""
-    emission_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    emission_dt = datetime.now(timezone.utc)
+    emission_time = emission_dt.strftime("%Y-%m-%d %H:%M UTC")
     log.info("=== Pipeline run started (%s) ===", emission_time)
 
     try:
@@ -822,12 +967,17 @@ def run_pipeline() -> None:
             log.error("Both data sources unavailable; skipping analysis this cycle.")
             return
 
-        report = build_analysis(client, chart, meteomar_text, emission_time)
+        # The system prompt is day-aware: it only frames section 3 around "the
+        # weekend" from Thursday onward.
+        system_prompt = build_system_prompt(emission_dt)
+        report = build_analysis(
+            client, chart, meteomar_text, emission_time, system_prompt
+        )
         if report is None:
             log.error("Analysis failed; no report written this cycle.")
             return
 
-        write_report(report, emission_time, chart, meteomar_text)
+        write_report(report, emission_time, emission_dt, chart, meteomar_text)
         log.info("=== Pipeline run completed successfully ===")
     except Exception:  # noqa: BLE001 - keep the scheduler alive no matter what
         log.exception("Unexpected error during pipeline run.")

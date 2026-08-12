@@ -23,8 +23,10 @@ The report follows a strict structure:
   *SITUAZIONE* and *PRESSIONE* sections of the Meteomar bulletin.
 - **2. Detail for our area** — wind, sea state, sky and visibility over the first
   24 h for the configured navigation areas.
-- **3. Weekend / navigation outlook** — practical deductions (engine use, night
-  anchorages) from the 12-hour-and-beyond projections.
+- **3. Navigation outlook** — practical deductions (engine use, night anchorages)
+  from the 12-hour-and-beyond projections. The section is framed around "the
+  weekend" only from Thursday onward; earlier in the week it stays on the generic
+  horizon covered by the bulletin.
 - **Sources** — pressure chart (image) and full Meteomar bulletin.
 
 ---
@@ -80,10 +82,13 @@ The same commands also work without Docker
 
 Reports are written to `./output`:
 
-- `output/index.html` — browsable page (list, view, download).
+- `output/index.html` — browsable page. The home page lists only the current
+  ISO week; older reports live in a collapsible year → month → week archive.
 - `output/latest.md` — always the most recent report.
-- `output/analisi_meteo_<timestamp>.md` — dated history of every emission.
-- `output/chart_<timestamp>.gif` and `output/meteomar_<timestamp>.txt` — attached sources.
+- `output/<year>/<month>/W<week>/analisi_meteo_<timestamp>.md` — dated history of
+  every emission, filed by year, month and ISO week.
+- `output/<year>/<month>/W<week>/chart_<timestamp>.gif` and `meteomar_<timestamp>.txt`
+  — attached sources, saved next to their report.
 
 ## Notes and troubleshooting
 
