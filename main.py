@@ -656,10 +656,10 @@ _IMAGE_EXT = {"image/png": "png", "image/jpeg": "jpg",
               "image/gif": "gif", "image/webp": "webp"}
 
 
-# AI-generated content disclosure appended to every report. The web page carries
-# the same notice, but the Markdown files are downloaded and forwarded on their
-# own, so the disclosure has to travel with them. Wording mirrors footer.ai in
-# INDEX_TEMPLATE; keep the two in sync.
+# AI-generated content disclosure appended to every report. It lives in the
+# report itself rather than in the page chrome, so it travels with the Markdown
+# when a report is downloaded or forwarded, and is shown exactly once when the
+# report is rendered in index.html.
 AI_DISCLOSURE_MD = """\
 \n\n---\n
 ## Contenuto generato da intelligenza artificiale
@@ -827,11 +827,6 @@ INDEX_TEMPLATE = """<!DOCTYPE html>
   article img { max-width:100%; height:auto; }
   article pre { overflow-x:auto; }
   .placeholder { color:#8aa0b5; text-align:center; margin-top:3rem; }
-  /* AI-generated content disclosure, kept next to the content it refers to. */
-  footer.ai { max-width:820px; margin:2.5rem auto 0; padding-top:1rem;
-              border-top:1px solid #1e3a5f; color:#8aa0b5; font-size:.78rem;
-              line-height:1.55; }
-  footer.ai strong { color:#c6d4e2; font-weight:600; }
   /* Phones: the 340px sidebar leaves no room for the report next to it, so
      stack the two. The list is capped and scrolls on its own, keeping the
      report reachable without paging through the whole archive. */
@@ -875,15 +870,6 @@ INDEX_TEMPLATE = """<!DOCTYPE html>
   </aside>
   <main>
     <article id="content"><p class="placeholder">Seleziona un report dall'elenco.</p></article>
-    <footer class="ai">
-      <strong>Contenuto generato da intelligenza artificiale.</strong>
-      I report pubblicati in questa pagina sono prodotti automaticamente da un modello
-      di IA generativa ({{MODEL}}) a partire dalla carta di pressione al suolo del
-      Met Office e dal bollettino Meteomar del C.N.M.C.A. Il testo non è rivisto da un
-      operatore umano prima della pubblicazione e può contenere errori o imprecisioni.
-      Non sostituisce i bollettini meteorologici ufficiali: per la navigazione fare
-      sempre riferimento alle fonti originali, allegate a ogni report.
-    </footer>
   </main>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
@@ -1021,7 +1007,6 @@ def write_index() -> None:
         .replace("{{CURRENT}}", "\n".join(current_items))
         .replace("{{ARCHIVE}}", archive_html)
         .replace("{{VERSION}}", APP_VERSION)
-        .replace("{{MODEL}}", GEMINI_MODEL)
     )
     (OUTPUT_DIR / "index.html").write_text(html, encoding="utf-8")
     log.info("Wrote index.html (%d report(s)).", len(reports))

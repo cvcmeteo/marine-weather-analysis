@@ -109,12 +109,11 @@ Reports are written to `./output`:
 - **Version**: `APP_VERSION` in `main.py` is logged at startup and shown as a badge
   in the header of the web page, so the running build can be identified from the
   page alone. Bump it by hand when the pipeline, the prompt or the page change.
-- **AI disclosure**: the page ends with a footer declaring that the reports are
-  produced by a generative AI model, as required for AI-generated content; the
-  model name is injected from `GEMINI_MODEL`. Every report `.md` closes with the
-  same notice (`AI_DISCLOSURE_MD`, appended after "Fonti"), so the disclosure
-  travels with the file when it is downloaded or forwarded — keep the two
-  wordings in sync.
+- **AI disclosure**: every report `.md` closes with a notice declaring that it was
+  produced by a generative AI model (`AI_DISCLOSURE_MD`, appended after "Fonti";
+  the model name comes from `GEMINI_MODEL`), as required for AI-generated
+  content. It lives in the report rather than in the page, so it travels with the
+  file when downloaded and is not shown twice when the report is rendered.
 - **Small screens**: below 760 px the sidebar and the report stack vertically; the
   chart image and the bulletin block are constrained so the page never scrolls
   sideways.
