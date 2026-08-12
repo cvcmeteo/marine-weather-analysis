@@ -116,5 +116,7 @@ Reports are written to `./output`:
 ├── Dockerfile                  # Runtime image
 ├── docker-compose.yml          # Scheduler + nginx web server
 ├── .env.example                # Configuration template (copy to .env)
+├── tools/
+│   └── migrate_output_layout.py  # One-off: file legacy flat reports into year/month/week
 └── output/                     # Generated reports (index.html, .md, sources)
 ```
