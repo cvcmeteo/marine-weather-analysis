@@ -35,6 +35,12 @@ from google.genai import errors as genai_errors
 # Configuration (all tunables come from environment variables)
 # --------------------------------------------------------------------------- #
 
+# Application version. Bump it by hand when the pipeline, the prompt or the web
+# page change in a way worth telling apart in production: it is logged at
+# startup and shown in the header of index.html, so the running build can be
+# identified from the page alone.
+APP_VERSION = "0.1.0"
+
 # Gemini API key is mandatory; the app refuses to start without it.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 
@@ -749,9 +755,15 @@ INDEX_TEMPLATE = """<!DOCTYPE html>
   * { box-sizing: border-box; }
   body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
          background:#0b1622; color:#e6edf3; }
-  header { padding:1.1rem 1.5rem; background:#0d2136; border-bottom:1px solid #1e3a5f; }
+  /* Right padding keeps the title clear of the absolutely positioned version
+     badge, including when it wraps on narrow screens. */
+  header { position:relative; padding:1.1rem 6rem 1.1rem 1.5rem; background:#0d2136;
+           border-bottom:1px solid #1e3a5f; }
   header h1 { margin:0; font-size:1.2rem; }
   header p { margin:.3rem 0 0; color:#8aa0b5; font-size:.85rem; }
+  header .ver { position:absolute; top:1.1rem; right:1.5rem; color:#8aa0b5;
+                font-size:.75rem; border:1px solid #1e3a5f; border-radius:999px;
+                padding:.15rem .55rem; white-space:nowrap; }
   .layout { display:flex; min-height: calc(100vh - 78px); }
   aside { width:340px; flex:0 0 340px; border-right:1px solid #1e3a5f; overflow-y:auto; }
   /* Sidebar list styles are scoped to <aside> so they never leak into the
@@ -789,13 +801,39 @@ INDEX_TEMPLATE = """<!DOCTYPE html>
   article li { margin:.25rem 0; }
   article table { border-collapse:collapse; }
   article th, article td { border:1px solid #2a4256; padding:.4rem .6rem; }
+  /* The pressure chart is a fixed-width image and the bulletin is a wide
+     preformatted block: both must be kept inside the column instead of
+     widening the page. The bulletin scrolls sideways on its own. */
+  article img { max-width:100%; height:auto; }
+  article pre { overflow-x:auto; }
   .placeholder { color:#8aa0b5; text-align:center; margin-top:3rem; }
+  /* AI-generated content disclosure, kept next to the content it refers to. */
+  footer.ai { max-width:820px; margin:2.5rem auto 0; padding-top:1rem;
+              border-top:1px solid #1e3a5f; color:#8aa0b5; font-size:.78rem;
+              line-height:1.55; }
+  footer.ai strong { color:#c6d4e2; font-weight:600; }
+  /* Phones: the 340px sidebar leaves no room for the report next to it, so
+     stack the two. The list is capped and scrolls on its own, keeping the
+     report reachable without paging through the whole archive. */
+  @media (max-width: 760px) {
+    .layout { flex-direction:column; min-height:auto; }
+    aside { width:100%; flex:none; max-height:42vh;
+            border-right:none; border-bottom:1px solid #1e3a5f; }
+    main { padding:1.1rem 1.1rem 2rem; }
+    header { padding:.9rem 1.1rem; }
+    header h1 { font-size:1.05rem; }
+    /* Not enough room beside a wrapping title: let the badge flow below it. */
+    header .ver { position:static; display:inline-block; margin-top:.5rem; }
+    article h1 { font-size:1.25rem; }
+    article table { display:block; overflow-x:auto; }
+  }
 </style>
 </head>
 <body>
 <header>
   <h1>🌊 Analisi Meteo Marina — Caprera / La Maddalena</h1>
   <p>Report generati automaticamente. Seleziona un report per visualizzarlo o scaricarlo.</p>
+  <span class="ver">ver. {{VERSION}}</span>
 </header>
 <div class="layout">
   <aside>
@@ -815,7 +853,18 @@ INDEX_TEMPLATE = """<!DOCTYPE html>
       </ul>
     </section>
   </aside>
-  <main><article id="content"><p class="placeholder">Seleziona un report dall'elenco.</p></article></main>
+  <main>
+    <article id="content"><p class="placeholder">Seleziona un report dall'elenco.</p></article>
+    <footer class="ai">
+      <strong>Contenuto generato da intelligenza artificiale.</strong>
+      I report pubblicati in questa pagina sono prodotti automaticamente da un modello
+      di IA generativa ({{MODEL}}) a partire dalla carta di pressione al suolo del
+      Met Office e dal bollettino Meteomar del C.N.M.C.A. Il testo non è rivisto da un
+      operatore umano prima della pubblicazione e può contenere errori o imprecisioni.
+      Non sostituisce i bollettini meteorologici ufficiali: per la navigazione fare
+      sempre riferimento alle fonti originali, allegate a ogni report.
+    </footer>
+  </main>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script>
@@ -951,6 +1000,8 @@ def write_index() -> None:
         INDEX_TEMPLATE
         .replace("{{CURRENT}}", "\n".join(current_items))
         .replace("{{ARCHIVE}}", archive_html)
+        .replace("{{VERSION}}", APP_VERSION)
+        .replace("{{MODEL}}", GEMINI_MODEL)
     )
     (OUTPUT_DIR / "index.html").write_text(html, encoding="utf-8")
     log.info("Wrote index.html (%d report(s)).", len(reports))
@@ -1033,9 +1084,9 @@ def check_sources() -> int:
 def run_service() -> None:
     """Run the long-lived scheduler (default mode)."""
     log.info(
-        "Starting marine weather analysis service "
+        "Starting marine weather analysis service v%s "
         "(model=%s, interval=%dh, output=%s).",
-        GEMINI_MODEL, RUN_INTERVAL_HOURS, OUTPUT_DIR,
+        APP_VERSION, GEMINI_MODEL, RUN_INTERVAL_HOURS, OUTPUT_DIR,
     )
 
     # Ensure the browser page exists immediately (lists any existing reports),

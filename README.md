@@ -106,6 +106,16 @@ Reports are written to `./output`:
   logged without stopping the scheduler.
 - **Time zone**: the container uses `Europe/Rome`; the emission times in the report
   are in UTC.
+- **Version**: `APP_VERSION` in `main.py` is logged at startup and shown as a badge
+  in the header of the web page, so the running build can be identified from the
+  page alone. Bump it by hand when the pipeline, the prompt or the page change.
+- **AI disclosure**: the page ends with a footer declaring that the reports are
+  produced by a generative AI model, as required for AI-generated content; the
+  model name is injected from `GEMINI_MODEL`. The downloadable `.md` files do not
+  carry it.
+- **Small screens**: below 760 px the sidebar and the report stack vertically; the
+  chart image and the bulletin block are constrained so the page never scrolls
+  sideways.
 
 ## Project structure
 
