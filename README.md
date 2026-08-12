@@ -120,6 +120,13 @@ access log: the page pings `/_e?ev=out&t=<label>`, which nginx answers with 204
 purely so the click is recorded. Report views need no beacon — opening a report
 already fetches its `.md`.
 
+**Views vs downloads.** The pressure chart is embedded in every report, so most
+requests for it are an `<img>` load that happens on its own when the report is
+opened. Those are counted as *carte viste nei report*; only a click on a
+"⬇ Scarica" link counts as a download. The two are told apart by the request's
+`Sec-Fetch-Dest` header (`image` for the inline load, `document` for a
+navigation), which nginx logs alongside everything else.
+
 **Country and city.** Behind Cloudflare the country arrives in the `CF-IPCountry`
 header for free. The city needs either the *Add visitor location headers*
 managed transform enabled in the Cloudflare dashboard (which adds `CF-IPCity`),

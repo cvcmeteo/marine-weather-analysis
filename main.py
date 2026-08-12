@@ -729,6 +729,7 @@ def _build_sources_section(
         chart_name = f"chart_{stamp}.{_IMAGE_EXT.get(media_type, 'png')}"
         (OUTPUT_DIR / subdir / chart_name).write_bytes(image_bytes)
         parts.append(f"![Carta di pressione al suolo]({href_prefix}/{chart_name})\n")
+        parts.append(f"[⬇ Scarica la carta]({href_prefix}/{chart_name})\n")
     else:
         parts.append("_Non disponibile per questa emissione._\n")
 
@@ -1135,8 +1136,11 @@ def _country_label(code: str) -> str:
     return f"{flag} {_COUNTRY_NAMES_IT.get(code, code)}"
 
 
-def _classify_uri(uri: str) -> tuple[str, str]:
+def _classify_uri(uri: str, dest: str = "") -> tuple[str, str]:
     """Map a request URI to an ``(event_kind, label)`` pair.
+
+    ``dest`` is the request's ``Sec-Fetch-Dest`` header, needed only to tell a
+    chart shown inside a report from one deliberately downloaded (see below).
 
     Everything that is not one of the tracked interactions (assets, favicons,
     the statistics page itself) is returned as ``("other", "")`` and dropped by
@@ -1163,7 +1167,14 @@ def _classify_uri(uri: str) -> tuple[str, str]:
         return "report", match.group(1)
     match = _CHART_URI_RE.search(path)
     if match:
-        return "chart", match.group(1)
+        # The chart is embedded in the report body, so most of its requests are
+        # an <img> load that happens by itself when the report is opened
+        # (Sec-Fetch-Dest: image). A click on the "Scarica la carta" link is a
+        # navigation instead ("document", or "empty" when the browser turns it
+        # straight into a download). Browsers that send no Sec-Fetch header at
+        # all are counted as views, which is what nearly every chart request is.
+        return ("chart" if dest in ("", "image") else "chart_download",
+                match.group(1))
     match = _BULLETIN_URI_RE.search(path)
     if match:
         return "bulletin", match.group(1)
@@ -1215,6 +1226,8 @@ def collect_stats() -> Optional[dict]:
         Counter(), Counter(), Counter(), Counter(), Counter())
     reports, charts, bulletins, outlinks, referrers = (
         Counter(), Counter(), Counter(), Counter(), Counter())
+    # Charts opened on purpose, as opposed to `charts` (shown inside a report).
+    chart_downloads = Counter()
     devices = Counter()
     visitors: set[str] = set()
     page_views = 0
@@ -1258,7 +1271,7 @@ def collect_stats() -> Optional[dict]:
         if not user_agent or _BOT_UA_RE.search(user_agent):
             continue
 
-        kind, label = _classify_uri(entry.get("uri") or "")
+        kind, label = _classify_uri(entry.get("uri") or "", entry.get("dest") or "")
         if kind == "other":
             continue
 
@@ -1299,6 +1312,8 @@ def collect_stats() -> Optional[dict]:
             reports[label] += 1
         elif kind == "chart":
             charts[label] += 1
+        elif kind == "chart_download":
+            chart_downloads[label] += 1
         elif kind == "bulletin":
             bulletins[label] += 1
         elif kind == "outlink":
@@ -1318,8 +1333,11 @@ def collect_stats() -> Optional[dict]:
         "visitors": len(visitors),
         "reports": reports,
         "report_total": sum(reports.values()),
-        "downloads": sum(charts.values()) + sum(bulletins.values()),
+        # Deliberate downloads only: a chart shown inside a report is a view.
+        "downloads": sum(chart_downloads.values()) + sum(bulletins.values()),
+        "chart_views": sum(charts.values()),
         "charts": charts,
+        "chart_downloads": chart_downloads,
         "bulletins": bulletins,
         "outlinks": outlinks,
         "referrers": referrers,
@@ -1457,6 +1475,7 @@ STATS_TEMPLATE = """<!DOCTYPE html>
     <div class="tile"><b>{{VISITORS}}</b><span>visitatori distinti</span></div>
     <div class="tile"><b>{{PAGE_VIEWS}}</b><span>aperture della home</span></div>
     <div class="tile"><b>{{REPORT_VIEWS}}</b><span>report consultati</span></div>
+    <div class="tile"><b>{{CHART_VIEWS}}</b><span>carte viste nei report</span></div>
     <div class="tile"><b>{{DOWNLOADS}}</b><span>download di fonti</span></div>
     <div class="tile"><b>{{REQUESTS}}</b><span>interazioni totali</span></div>
   </div>
@@ -1472,7 +1491,8 @@ STATS_TEMPLATE = """<!DOCTYPE html>
     <section><h2>Paesi</h2>{{COUNTRIES}}</section>
     <section><h2>Città</h2>{{CITIES}}</section>
     <section class="wide"><h2>Report più consultati</h2>{{REPORTS}}</section>
-    <section><h2>Carte scaricate</h2>{{CHARTS}}</section>
+    <section><h2>Carte viste nei report</h2>{{CHARTS}}</section>
+    <section><h2>Carte scaricate</h2>{{CHART_DOWNLOADS}}</section>
     <section><h2>Bollettini scaricati</h2>{{BULLETINS}}</section>
     <section><h2>Click sui link esterni</h2>{{OUTLINKS}}</section>
     <section><h2>Provenienza del traffico</h2>{{REFERRERS}}</section>
@@ -1485,6 +1505,8 @@ STATS_TEMPLATE = """<!DOCTYPE html>
     solo per ricavare paese e città e per contare i visitatori distinti, e non
     vengono conservati in questa pagina. Il traffico riconosciuto come
     automatico (crawler, sonde di monitoraggio) è escluso dai conteggi.
+    Le carte «viste nei report» si caricano insieme al report che le contiene;
+    i download contano solo i click sui link «Scarica».
     {{GEOIP_NOTE}}
   </footer>
 </div>
@@ -1523,6 +1545,7 @@ def write_stats() -> None:
             .replace("{{VISITORS}}", str(data["visitors"]))
             .replace("{{PAGE_VIEWS}}", str(data["page_views"]))
             .replace("{{REPORT_VIEWS}}", str(data["report_total"]))
+            .replace("{{CHART_VIEWS}}", str(data["chart_views"]))
             .replace("{{DOWNLOADS}}", str(data["downloads"]))
             .replace("{{REQUESTS}}", str(data["requests"]))
             .replace("{{HOURS}}", _hour_columns(data["hours"]))
@@ -1535,6 +1558,9 @@ def write_stats() -> None:
                 data["reports"], limit=15, labeller=_report_title))
             .replace("{{CHARTS}}", _bar_rows(
                 data["charts"], limit=8, labeller=_report_title))
+            .replace("{{CHART_DOWNLOADS}}", _bar_rows(
+                data["chart_downloads"], limit=8, labeller=_report_title,
+                empty="Nessuna carta scaricata dal link."))
             .replace("{{BULLETINS}}", _bar_rows(
                 data["bulletins"], limit=8, labeller=_report_title))
             .replace("{{OUTLINKS}}", _bar_rows(data["outlinks"]))
