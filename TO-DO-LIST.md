@@ -1,2 +1,3 @@
 - [ ] Add support for the English language.
+- [ ] Add the Meteo France analysis (https://meteofrance.com/meteo-marine/large/maddalena/BMSLARGE-03-09, https://meteofrance.com/isofronts)
 - [x] Add the GitHub logo to the footer of the page, including a direct link to the project repository (https://github.com/cvcmeteo/marine-weather-analysis).
